@@ -1,0 +1,418 @@
+
+# Kaggle Competition
+# In this challenge, we invite Kagglers to help us identify which customers will 
+# make a specific transaction in the future, irrespective of the amount of money 
+# transacted. The data provided for this competition has 
+# the same structure as the real data we have available to solve this problem.
+
+# Hint: the given train.csv needs to be divided into trainset for training
+# and testset for testing the model. Then the model is used to predict the
+# the target for test.csv
+
+# get the dataset
+dataset <- read.csv('train.csv')
+dataset <- dataset[, -1] # I removed the ID_code variable from datasetset
+View(head(dataset))
+
+library(caTools)
+# set.seed(1900)
+split = sample.split(dataset$target, SplitRatio = 0.80)
+training_set = subset(dataset, split == TRUE)
+test_set = subset(dataset, split == FALSE)
+
+View(head(training_set))
+View(head(test_set))
+
+# Feature Scaling
+training_set[-1] = scale(training_set[-1]) # standardization of training_set without target (class variable)
+test_set[-1] = scale(test_set[-1]) # standardization of test_set without target(class variable)
+
+View(head(training_set[-1]))
+View(head(test_set[-1]))
+
+# install.packages('caret')
+library(caret)
+# install.packages('e1071')
+library(e1071)
+
+### ------------FEATURE SELECTION -----------------
+
+# ---------- Applying backward elimination 
+# method for features selection
+# using knowledge from statistical modelling in UTA for features selection
+regressor <- glm(target ~ ., family=binomial(link="logit"), data=training_set)
+summary(regressor)
+
+library(MASS)
+regressor_BWD = stepAIC(regressor, direction = "backward", trace = FALSE)
+
+regressor3 <- glm(target ~ ., family=quasibinomial(link="logit"), data=training_set)
+summary(regressor3)
+
+library(pscl)
+regressor1<-zeroinfl(target ~ ., data=training_set, dist="negbin")
+summary(regressor1)
+### feature selection méthods not working
+
+
+### ----------- FEATURES EXTRACTION ------------
+
+# applying PCA technique (features extraction)
+pca = preProcess(x = training_set[-1], method = 'pca', thresh = 0.90)
+# pca = preProcess(x = training_set[-1], method = 'pca', pcaComp = 5)
+
+
+trainingset_pca <- predict(pca, training_set)
+View(head(trainingset_pca))
+trainingset_pca = trainingset_pca[c(2:180, 1)]
+
+testset_pca <- predict(pca, test_set)
+View(head(testset_pca))
+testset_pca = testset_pca[c(2:180, 1)]
+
+
+# applying kernel PCA technique (features extraction)
+# install.packages('kernlab')
+library(kernlab)
+kpca = kpca(~., data = training_set[-1], kernel = 'rbfdot', thresh = 0.9) #features
+trainingset_kpca <- as.data.frame(predict(kpca, training_set))
+
+# # --------- Fitting Kernel SVM to the trainingset_pca ---------------
+# # install.packages('e1071')
+# library(e1071)
+# classifier <- svm(formula = target ~.,
+#                   data = trainingset_pca,
+#                   type = 'C-classification',
+#                   kernel = 'radial')
+# 
+# # Predicting the results of testset_pca without target
+# y_pred = predict(classifier, newdata = testset_pca[-6])
+# 
+# # Making the Confusion Matrix
+# cm_ksvm = table(testset_pca[, 6], y_pred)
+# # accuracy = 0.89566
+
+# plotting ROC
+# library(ROCR)
+# pred_roc = predict(classifier, newdata = testset_pca[-6], type = "prob")
+# roc <- performance(pred_roc, "tpr", "fpr")
+# plot(roc)
+# abline(a=0, b=1)
+# 
+# calculation of area under the curve AUC
+# auc <- performance(pred, "auc")
+# auc <- unlist(slot(auc, "y.values"))
+
+# I used the comparison of accuracy between linear and kernel
+# svm to check for linearity of the problem.
+
+# Applying K-FOld cross validation to linear svm
+library(caret)
+folds = createFolds(trainingset_pca$target, k = 10)
+
+cv_lsvm = lapply(folds, function(x) {
+  training_fold = trainingset_pca[-x, ]
+  test_fold = trainingset_pca[x, ]
+  
+  classifier <- svm(formula = target ~.,
+                    data = training_fold,
+                    type = 'C-classification',
+                    kernel = 'linear')
+  
+  y_pred = predict(classifier, newdata = test_fold[-6])
+  cm = table(test_fold[, 6], y_pred)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1]) 
+  return(accuracy)
+  
+})
+accuracy_lsvm_fold = mean(as.numeric(cv_lsvm)) 
+# accuracy of linear svm with 10 fold cross validation
+# 1 accuracy = 
+
+# Applying K-FOld cross validation to kernel svm
+cv_ksvm = lapply(folds, function(x) {
+  training_fold = trainingset_pca[-x, ]
+  test_fold = trainingset_pca[x, ]
+  
+  classifier <- svm(formula = target ~.,
+                    data = training_fold,
+                    type = 'C-classification',
+                    kernel = 'radial')
+  
+  y_pred = predict(classifier, newdata = test_fold[-6])
+  cm = table(test_fold[, 6], y_pred)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1]) 
+  return(accuracy)
+  
+})
+accuracy_ksvm_fold = mean(as.numeric(cv_ksvm)) 
+# accuracy of kernel svm with 10 fold cross validation
+# 2 accuracy = 
+
+
+# --------- Fitting K-NN with k-Fold cross validation to the trainingset_pca 
+#  and predicting hte testset_pca results ---------------
+library(class)
+cv_knn = lapply(folds, function(x) {
+  training_fold = trainingset_pca[-x, ]
+  test_fold = trainingset_pca[x, ]
+  
+  y_pred = knn(train = training_fold,
+               test = test_fold[-6],
+               cl = trainingset_pca[x, ],
+               k = 5)
+  
+  # Making the Confusion Matrix
+  cm = table(test_fold[, 6], y_pred)
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1]) 
+  return(accuracy)
+  
+})
+accuracy_knn_fold = mean(as.numeric(cv_knn)) 
+# accuracy of knn with 10 fold cross validation
+# 3 accuracy = 
+
+# # K-NN returns the results of the testset_pca 
+# y_pred_knn = knn(train = trainingset_pca[, -6],
+#                  test = testset_pca[, -6],
+#                  cl = trainingset_pca[, 6],
+#                  k = 5)
+# 
+# # Making the Confusion Matrix
+# cm_knn = table(testset_pca[, 6], y_pred_knn)
+# # accuracy = 0.87944
+
+# -------- Fitting xgboost to the data directly without feature scaling and
+# feature extraction -------------
+
+# applying feature scaling
+# Feature Scaling
+training_set[-1] = scale(training_set[-1]) # standardization of training_set without target (class variable)
+test_set[-1] = scale(test_set) # standardization of test_set without target(class variable)
+
+View(head(training_set[-1]))
+View(head(test_set[-1]))
+
+#install.packages('xgboost')
+library(xgboost)
+#install.packages("ROCR")
+library(ROCR)
+
+classifier = xgboost(data = as.matrix(training_set[-1]), 
+                     label = training_set$target,
+                     nrounds = 50)
+y_pred = predict(classifier, newdata = as.matrix(test_set[-1]))
+y_pred_ac = ifelse(y_pred >= 0.5, 1, 0)
+cm <- table(test_set[, 1], y_pred_ac)
+accuracy <- sum(diag(cm))/sum(cm)
+# accuracy = 0.90664
+# accuracy not increasing with increasing nrounds from 60 to 150 thougn
+# train-rmse reduced
+
+y_pred = prediction(y_pred, test_set$target)
+roc <- performance(y_pred, "tpr", "fpr")
+plot(roc)
+abline(a=0, b=1)
+
+#calculation of area under the curve AUC
+auc <- performance(y_pred, "auc")
+auc <- unlist(slot(auc, "y.values"))
+# auc = 0.8343837 at nrounds = 40
+# auc = 0.8437413 at nrounds = 60
+# auc = 0.8505141 at nrounds = 150
+
+# -------- here I worked on getting optimum cut off value and highest accuracy
+eval <- performance(y_pred, "acc")
+plot(eval)
+abline(h = 0.92, v = 0.45)
+# identifying best values
+max <- which.max(slot(eval, "y.values")[[1]]) #postion of maximum accuracy
+acc <- slot(eval, "y.values")[[1]][max]
+cut <- slot(eval, "x.values")[[1]][max] #best cut off is 0.4645814 and not 0.5
+
+# Applying K-fold cross validation on xgboost
+library(caret)
+folds = createFolds(training_set$target, k = 10)
+
+cv_xgboost = lapply(folds, function(x) {
+  training_fold = training_set[-x, ]
+  test_fold = training_set[x, ]
+  
+  classifier = xgboost(data = as.matrix(training_fold[-1]), 
+                       label = training_fold$target,
+                       nrounds = 20)
+  
+  y_pred = predict(classifier, newdata = as.matrix(test_fold[-1]))
+  y_pred = ifelse(y_pred >= 0.46, 1, 0)
+  
+  # Making the Confusion Matrix
+  cm = table(test_fold[, 1], y_pred)
+  accuracy = sum(diag(cm))/sum(cm) 
+  return(accuracy)
+  
+})
+accuracy_xgboost_fold = mean(as.numeric(cv_xgboost)) 
+
+# ---- Applying Grid search to find best hyperparameter
+# install.packages('caret')
+library(caret)
+training_set$target = as.factor(training_set$target)
+classifier = train(form = target ~ ., data = training_set, method = 'xgbTree')
+classifier$bestTune
+  
+  
+
+# 24/2/2019, Now use this to predict the test set from kaggle
+# and make submission
+testset <- read.csv('test.csv')
+first_column <- testset[, 1]
+test_pred = predict(classifier, newdata = as.matrix(testset[-1]))
+test_pred = ifelse(test_pred >= 0.46, 1, 0)
+
+target<- as.data.frame(test_pred)
+id_code <- as.data.frame(testset$ID_code)
+
+names(target) <- c("target")
+names(id_code) <- c("ID_code")
+
+write.csv(target, file = "target.csv")
+write.csv(id_code, file = "id_code.csv")
+# postion on kaggle after submission was 1960 out of 2108
+# with score of 0.552
+
+### ---- Applying ANN----
+
+library(caTools)
+split = sample.split(dataset$target, SplitRatio = 0.80)
+training_set = subset(dataset, split == TRUE)
+test_set = subset(dataset, split == FALSE)
+
+View(head(training_set))
+View(head(test_set))
+
+# Feature Scaling
+training_set[-1] = scale(training_set[-1]) # standardization of training_set without target (class variable)
+test_set[-1] = scale(test_set) # standardization of test_set without target(class variable)
+
+View(head(training_set[-1]))
+View(head(test_set[-1]))
+
+# --- using h2o package
+install.packages('h2o')
+library(h2o)
+h2o.init(nthreads = -1)
+classifier = h2o.deeplearning(y = "target",
+                              training_frame = as.h2o(training_set),
+                              activation = "Rectifier",
+                              hidden = c(10, 10),
+                              epochs = 100,
+                              train_samples_per_iteration = -2)
+
+y_pred_prob = h2o.predict(classifier, newdata = as.h2o(test_set[-1]))
+
+# ----- checking highest accuracy
+library(ROCR)
+y_pred_prob = as.vector(y_pred_prob)
+y_pred = prediction(y_pred_prob, test_set$target)
+roc <- performance(y_pred, "tpr", "fpr")
+plot(roc)
+abline(a=0, b=1)
+
+#calculation of area under the curve AUC
+auc <- performance(y_pred, "auc")
+auc <- unlist(slot(auc, "y.values"))
+
+# -------- here I worked on getting optimum cut off value
+eval <- performance(y_pred, "acc")
+plot(eval)
+abline(h = 0.92, v = 0.45)
+# identifying best values
+max <- which.max(slot(eval, "y.values")[[1]]) #postion of maximum accuracy
+acc <- slot(eval, "y.values")[[1]][max]
+cut <- slot(eval, "x.values")[[1]][max] #best cut off is 0.4645814 and not 0.5
+# highest accuracy to get is 0.89955
+
+#------
+
+y_pred_ann = ifelse(y_pred_prob > 0.5, 1, 0)
+y_pred_ann = as.vector(y_pred_ann)
+
+# confusion matrix
+cm_ann = table(test_set[, 1], y_pred_ann)
+
+# disconnet from h2o using 
+# h2o.shutdown
+
+# ------------- applying catboost method ---------
+# catboost successfully installed
+library(catboost)
+View(head(training_set))
+
+# replace taining_set with dataset for submission classifier
+train_pool <- catboost.load_pool(data = dataset[, -1], 
+                                 label = dataset$target)
+
+catboost_model <- catboost.train(train_pool,  NULL,
+                        params = list(iterations = 2000,
+                                      learning_rate=0.03,
+                                      depth=10,
+                                      l2_leaf_reg=10,
+                                      loss_function = 'CrossEntropy',
+                                      bootstrap_type = 'Bernoulli',
+                                      subsample = 0.70,
+                                      feature_border_type = 'GreedyLogSum',
+                                      border_count=100))
+
+#learn: 0.1732690 / learn: 0.1443389 / learn: 0.1105840
+real_pool <- catboost.load_pool(test_set[, -1])
+
+y_pred_cb <- catboost.predict(catboost_model, real_pool, prediction_type = 'Probability')
+
+View(head(y_pred_cb))
+cm_cb <- table(test_set$target, y_pred_cb)
+acc_cb <- sum(diag(cm_cb))/sum(cm_cb)
+# acc_cb = 0.910325/0.91485/0.9187757/0.918975/0.9219
+
+library(ROCR)
+y_pred_prob = as.vector(y_pred_cb)
+y_pred = prediction(y_pred_cb, test_set$target)
+roc <- performance(y_pred, "tpr", "fpr")
+plot(roc)
+abline(a=0, b=1)
+
+auc <- performance(y_pred, "auc")
+auc <- unlist(slot(auc, "y.values"))
+# auc = 0.8734643/0.8824884/0.892942 -1200/0.8964917 -2000/
+
+eval <- performance(y_pred, "acc")
+plot(eval)
+abline(h = 0.92, v = 0.45)
+# identifying best values
+max <- which.max(slot(eval, "y.values")[[1]]) #postion of maximum accuracy
+acc <- slot(eval, "y.values")[[1]][max] # 0.9192
+cut <- slot(eval, "x.values")[[1]][max] #best cut off is 0.3269043
+
+# Note: Parameter tuning is required
+# 28/2/2019, Now use this to predict the test set from kaggle
+# and make submission
+testset <- read.csv('test.csv')
+
+#--
+real_pool <- catboost.load_pool(testset[, -1])
+test_pred_cb <- catboost.predict(catboost_model, real_pool, prediction_type = 'Class')
+#--
+
+#test_pred = predict(classifier, newdata = as.matrix(testset[-1]))
+#test_pred = ifelse(test_pred >= 0.46, 1, 0)
+
+target<- as.data.frame(test_pred_cb)
+id_code <- as.data.frame(testset$ID_code)
+
+names(target) <- c("target")
+names(id_code) <- c("ID_code")
+
+write.csv(target, file = "target.csv")
+write.csv(id_code, file = "id_code.csv")
+# postion on kaggle after submission was 2782 out of 2996
+# with score of 0.592
+# fourth sub. score 0.640, position 2835 out of 3257
